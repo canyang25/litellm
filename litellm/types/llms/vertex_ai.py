@@ -92,8 +92,13 @@ class HttpxServerSideToolResponse(TypedDict, total=False):
     response: str | dict
 
 
+class HttpxAudioTranscription(TypedDict, total=False):
+    text: str
+
+
 class HttpxPartType(TypedDict, total=False):
     text: str
+    audioTranscription: HttpxAudioTranscription
     inlineData: HttpxBlobType
     fileData: FileDataType
     functionCall: HttpxFunctionCall

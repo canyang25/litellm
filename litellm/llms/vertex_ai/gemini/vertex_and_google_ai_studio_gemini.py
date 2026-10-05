@@ -1374,6 +1374,12 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
                 if mime_type.startswith("audio/") or mime_type.startswith("image/"):
                     continue
                 _content_str += f"data:{mime_type};base64,{data}"
+            else:
+                transcription = part.get("audioTranscription")
+                if isinstance(transcription, dict):
+                    transcript = transcription.get("text")
+                    if isinstance(transcript, str) and transcript:
+                        _content_str += transcript
 
             if len(_content_str) > 0:
                 if part.get("thought") is True:

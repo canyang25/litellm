@@ -811,6 +811,55 @@ def test_streaming_chunk_includes_reasoning_content():
     )
 
 
+_AUDIO_TRANSCRIPT: Final = "Say AI mediator billing test audio."
+
+
+def _audio_transcription_response() -> dict:
+    return {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [{"audioTranscription": {"text": _AUDIO_TRANSCRIPT}}],
+                    "role": "model",
+                },
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {"promptTokenCount": 151, "candidatesTokenCount": 0, "totalTokenCount": 151},
+    }
+
+
+def test_gemini_transcribe_completion_response_keeps_audio_transcription_text():
+    raw_response = MagicMock()
+    raw_response.json.return_value = _audio_transcription_response()
+    raw_response.headers = {}
+
+    result = VertexGeminiConfig().transform_response(
+        model="gemini/gemini-3.5-transcribe",
+        raw_response=raw_response,
+        model_response=ModelResponse(),
+        logging_obj=MagicMock(),
+        request_data={},
+        messages=[],
+        optional_params={},
+        litellm_params={},
+        encoding=None,
+    )
+
+    assert result.choices[0].message.content == _AUDIO_TRANSCRIPT
+
+
+def test_gemini_transcribe_stream_chunk_keeps_audio_transcription_text():
+    from litellm.llms.vertex_ai.gemini.vertex_and_google_ai_studio_gemini import (
+        ModelResponseIterator,
+    )
+
+    iterator = ModelResponseIterator(streaming_response=[], sync_stream=True, logging_obj=MagicMock())
+    streaming_chunk = iterator.chunk_parser(_audio_transcription_response())
+
+    assert streaming_chunk.choices[0].delta.content == _AUDIO_TRANSCRIPT
+
+
 def test_streaming_chunk_with_tool_calls_and_thought_includes_reasoning_content():
     """
     Test that when Gemini returns a streaming chunk with both thought: true parts
