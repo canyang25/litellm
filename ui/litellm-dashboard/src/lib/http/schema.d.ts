@@ -48747,6 +48747,8 @@ export interface components {
             fallbacks?: {
                 [key: string]: unknown;
             }[] | null;
+            /** Max Fallbacks */
+            max_fallbacks?: number | null;
             /** Max Retries */
             max_retries?: number | null;
             /** Model Group Affinity Config */
