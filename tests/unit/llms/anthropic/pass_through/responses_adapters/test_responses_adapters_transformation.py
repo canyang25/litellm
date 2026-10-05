@@ -623,9 +623,7 @@ class TestTranslateMessagesToResponsesInput:
             }
         ]
         result = _translate_messages(messages)
-        assert result == [
-            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Private reasoning."}]}
-        ]
+        assert result == [{"type": "reasoning", "summary": [{"type": "summary_text", "text": "Private reasoning."}]}]
 
     def test_consecutive_thinking_blocks_become_one_reasoning_item(self):
         """Summary parts of one upstream reasoning item are regrouped into that item."""
@@ -2086,6 +2084,78 @@ class TestPromptCacheBreakpointToResponses:
         assert kwargs["instructions"] == "Be concise.\nBe helpful."
         assert kwargs["input"] == [
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}
+        ]
+
+    def test_system_cache_control_stays_a_developer_message_with_an_explicit_breakpoint(self):
+        request = _make_request(
+            model="bedrock_mantle/openai.gpt-5.6-terra",
+            system=[
+                {
+                    "type": "text",
+                    "text": "You are Claude Code.",
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
+                }
+            ],
+        )
+        kwargs = _ADAPTER.translate_request(request)
+        assert "instructions" not in kwargs
+        assert kwargs["input"][0] == {
+            "type": "message",
+            "role": "developer",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "You are Claude Code.",
+                    "prompt_cache_breakpoint": {"mode": "explicit"},
+                }
+            ],
+        }
+
+    def test_prompt_cache_breakpoint_wins_when_cache_control_is_also_set(self):
+        request = _make_request(
+            system=[
+                {
+                    "type": "text",
+                    "text": "Be helpful.",
+                    "cache_control": {"type": "ephemeral"},
+                    "prompt_cache_breakpoint": self.EXPLICIT,
+                }
+            ],
+        )
+        kwargs = _ADAPTER.translate_request(request)
+        assert kwargs["input"][0]["content"] == [
+            {"type": "input_text", "text": "Be helpful.", "prompt_cache_breakpoint": self.EXPLICIT}
+        ]
+
+    def test_user_cache_control_becomes_an_explicit_breakpoint(self):
+        items = _ADAPTER.translate_messages_to_responses_input(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}},
+                        {
+                            "type": "image",
+                            "source": {"type": "url", "url": "https://example.com/a.png"},
+                            "cache_control": {"type": "ephemeral"},
+                        },
+                    ],
+                }
+            ]
+        )
+        assert items == [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "hi", "prompt_cache_breakpoint": {"mode": "explicit"}},
+                    {
+                        "type": "input_image",
+                        "image_url": "https://example.com/a.png",
+                        "prompt_cache_breakpoint": {"mode": "explicit"},
+                    },
+                ],
+            }
         ]
 
     def test_system_string_still_becomes_instructions(self):

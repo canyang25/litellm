@@ -8,6 +8,7 @@ path used for OpenAI and Azure models.
 import json
 from collections.abc import Iterable, Mapping
 from itertools import groupby
+from types import MappingProxyType
 from typing import Any, Final, cast
 
 from litellm.litellm_core_utils.prompt_templates.common_utils import (
@@ -51,6 +52,16 @@ from litellm.types.llms.openai import (
 
 REASONING_SUMMARY_PART_SEPARATOR: Final = "\n\n"
 RESPONSES_INCLUDE_ENCRYPTED_REASONING: Final = "reasoning.encrypted_content"
+_EXPLICIT_PROMPT_CACHE_BREAKPOINT: Final[Mapping[str, str]] = MappingProxyType({"mode": "explicit"})
+
+
+def _prompt_cache_breakpoint_marker(block: Mapping[str, object]) -> object | None:
+    explicit_marker: Final = block.get("prompt_cache_breakpoint")
+    if explicit_marker is not None:
+        return explicit_marker
+    if block.get("cache_control") is None:
+        return None
+    return _EXPLICIT_PROMPT_CACHE_BREAKPOINT
 
 
 class LiteLLMAnthropicToResponsesAPIAdapter:
@@ -148,7 +159,7 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
         if not isinstance(content, list):
             return []
         return [
-            with_prompt_cache_breakpoint({"type": "input_text", "text": text}, block.get("prompt_cache_breakpoint"))
+            with_prompt_cache_breakpoint({"type": "input_text", "text": text}, _prompt_cache_breakpoint_marker(block))
             for block in content
             if isinstance(block, dict) and block.get("type") == "text" and (text := block.get("text"))  # pyright: ignore[reportUnnecessaryIsInstance]  # untrusted client payload
         ]
@@ -266,7 +277,7 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
                             user_parts.append(
                                 with_prompt_cache_breakpoint(
                                     {"type": "input_text", "text": block.get("text", "")},
-                                    block.get("prompt_cache_breakpoint"),
+                                    _prompt_cache_breakpoint_marker(block),
                                 )
                             )
                         elif btype == "image":
@@ -274,14 +285,15 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
                             if url:
                                 user_parts.append(
                                     with_prompt_cache_breakpoint(
-                                        {"type": "input_image", "image_url": url}, block.get("prompt_cache_breakpoint")
+                                        {"type": "input_image", "image_url": url},
+                                        _prompt_cache_breakpoint_marker(block),
                                     )
                                 )
                         elif btype == "document":
                             file_part = self._translate_anthropic_document_block_to_file_part(block)
                             if file_part:
                                 user_parts.append(
-                                    with_prompt_cache_breakpoint(file_part, block.get("prompt_cache_breakpoint"))
+                                    with_prompt_cache_breakpoint(file_part, _prompt_cache_breakpoint_marker(block))
                                 )
                         elif btype == "tool_result":
                             tool_use_id = block.get("tool_use_id", "")
@@ -520,7 +532,7 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
         developer_parts: Final = (
             self._translate_midturn_system_content_to_responses(system)
             if isinstance(system, list)
-            and any(isinstance(block, dict) and block.get("prompt_cache_breakpoint") is not None for block in system)
+            and any(isinstance(block, dict) and _prompt_cache_breakpoint_marker(block) is not None for block in system)
             else ()
         )
         if developer_parts:
