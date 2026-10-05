@@ -59,6 +59,7 @@ def test_update_settings_applies_max_fallbacks():
 
     router.update_settings(max_fallbacks=10, num_retries=3)
     assert router.max_fallbacks == 10
+    assert router.get_settings()["max_fallbacks"] == 10
     assert router.num_retries == 3
 
     router.update_settings(num_retries=4)

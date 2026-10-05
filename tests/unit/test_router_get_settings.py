@@ -14,6 +14,7 @@ def test_get_settings_returns_the_routing_and_retry_settings_the_router_was_buil
         retry_after=5,
         allowed_fails=1,
         cooldown_time=30,
+        max_fallbacks=7,
     )
 
     settings: Final = router.get_settings()
@@ -24,3 +25,4 @@ def test_get_settings_returns_the_routing_and_retry_settings_the_router_was_buil
     assert settings["num_retries"] == 3
     assert settings["retry_after"] == 5
     assert settings["cooldown_time"] == 30
+    assert settings["max_fallbacks"] == 7

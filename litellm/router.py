@@ -12273,6 +12273,7 @@ class Router:
             "num_retries",
             "timeout",
             "max_retries",
+            "max_fallbacks",
             "retry_after",
             "fallbacks",
             "context_window_fallbacks",
