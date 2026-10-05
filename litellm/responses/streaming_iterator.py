@@ -1826,6 +1826,8 @@ RESPONSES_WS_MASKABLE_TEXT_BLOCK_TYPES: Final = frozenset({"input_text", "output
 
 _RESPONSES_WS_FAILURE_EVENT_TYPES: Final = frozenset({"error", "response.failed"})
 
+_RESPONSES_WS_TERMINAL_EVENT_TYPES: Final = frozenset({"response.completed", "response.incomplete", "response.failed"})
+
 _RESPONSES_WS_OUTPUT_ITEM_EVENT_TYPES: Final = frozenset({"response.output_item.added", "response.output_item.done"})
 
 
@@ -1930,6 +1932,7 @@ class ResponsesWebSocketStreaming:
         # response.create frame to prevent deployment-substitution attacks.
         self.authorized_model: str | None = authorized_model
         self.request_defaults: ResponsesWebSocketRequestDefaults | None = request_defaults
+        self._upstream_truncated: Exception | None = None
 
     def _should_store_event(self, event_obj: _MutableJsonObject) -> bool:
         return event_obj.get("type") in RESPONSES_WS_LOGGED_EVENT_TYPES
@@ -1988,7 +1991,24 @@ class ResponsesWebSocketStreaming:
         if self.logging_obj:
             self.logging_obj.pre_call(input=message, api_key="")
 
-    def _failure_exception(self) -> Exception | None:
+    @staticmethod
+    def _event_response_id(event: _MutableJsonObject) -> str | None:
+        response: Final = event.get("response")
+        if not isinstance(response, dict):
+            return None
+        response_id: Final = response.get("id")
+        return response_id if isinstance(response_id, str) and response_id else None
+
+    def _logged_response_ids(self, event_types: frozenset[str]) -> frozenset[str]:
+        ids: Final = (self._event_response_id(event) for event in self.messages if event.get("type") in event_types)
+        return frozenset(response_id for response_id in ids if response_id is not None)
+
+    def _has_unfinished_response(self) -> bool:
+        started: Final = self._logged_response_ids(frozenset({"response.created"}))
+        finished: Final = self._logged_response_ids(_RESPONSES_WS_TERMINAL_EVENT_TYPES)
+        return any(response_id not in finished for response_id in started)
+
+    def _logged_provider_failure(self) -> Exception | None:
         failed_event: Final = next(
             (event for event in self.messages if event.get("type") in _RESPONSES_WS_FAILURE_EVENT_TYPES), None
         )
@@ -1996,6 +2016,22 @@ class ResponsesWebSocketStreaming:
             return None
         return _map_stream_error_to_exception(
             _ws_event_error(failed_event), self.authorized_model or "", self.custom_llm_provider or ""
+        )
+
+    def _failure_exception(self) -> Exception | None:
+        provider_failure: Final = self._logged_provider_failure()
+        if provider_failure is not None:
+            return provider_failure
+        return self._upstream_truncated
+
+    def _upstream_closed_early_error(self) -> litellm.APIConnectionError:
+        return litellm.APIConnectionError(
+            message=(
+                f"{self.custom_llm_provider or 'provider'} closed the responses websocket before any terminal event "
+                "(response.completed, response.incomplete or response.failed)"
+            ),
+            llm_provider=self.custom_llm_provider or "",
+            model=self.authorized_model or "",
         )
 
     async def _log_messages(self) -> None:
@@ -2009,7 +2045,10 @@ class ResponsesWebSocketStreaming:
         if exception is None:
             asyncio.create_task(self.logging_obj.dispatch_success_handlers(self.messages, prefer_async_handlers=True))
             return
-        self._record_usage_for_failure()
+        try:
+            self._record_usage_for_failure()
+        except Exception:  # noqa: BLE001 # usage recording must not fail the relay
+            verbose_logger.debug("Responses WS failure usage recording failed", exc_info=True)
         traceback_exception: Final = "".join(traceback.format_exception(exception))
         asyncio.create_task(
             self.logging_obj.dispatch_failure_handlers(exception, traceback_exception, prefer_async_handlers=True)
@@ -2093,6 +2132,11 @@ class ResponsesWebSocketStreaming:
 
         except websockets.exceptions.ConnectionClosed as e:
             verbose_logger.debug("Responses WS backend connection closed: %s", e)
+            if self._has_unfinished_response() and self._logged_provider_failure() is None:
+                self._upstream_truncated = self._upstream_closed_early_error()
+                await self._tell_client_upstream_closed()
+            else:
+                await self._close_client_socket()
         except Exception as e:
             verbose_logger.exception("Error in responses WS backend_to_client: %s", e)
         finally:
@@ -2457,19 +2501,65 @@ class ResponsesWebSocketStreaming:
         except Exception as e:
             verbose_logger.debug("Responses WS client_to_backend ended: %s", e)
 
+    async def _tell_client_upstream_closed(self) -> None:
+        try:
+            await self.websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "server_error",
+                            "code": "upstream_closed",
+                            "message": (
+                                "Upstream closed the responses websocket before any terminal event "
+                                "(response.completed, response.incomplete or response.failed)"
+                            ),
+                        },
+                    }
+                )
+            )
+        except Exception:  # noqa: BLE001 # the client socket may already be closed
+            verbose_logger.debug("Responses WS client was already gone when reporting an upstream close", exc_info=True)
+        await self._close_client_socket(code=1011)
+
+    async def _close_client_socket(self, code: int = 1000) -> None:
+        close: Final = getattr(self.websocket, "close", None)
+        if not callable(close):
+            return
+        try:
+            result = close(code=code)
+        except TypeError:
+            try:
+                result = close()
+            except Exception:  # noqa: BLE001 # the client socket may already be closed
+                return
+        except Exception:  # noqa: BLE001 # the client socket may already be closed
+            return
+        if isinstance(result, Awaitable):
+            try:
+                await result
+            except Exception:  # noqa: BLE001 # the client socket may already be closed
+                return
+
+    @staticmethod
+    async def _stop_forward_task(task: asyncio.Task[None]) -> None:
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return
+        except Exception:  # noqa: BLE001 # a forwarding task already logged its own error
+            return
+
     async def bidirectional_forward(self) -> Exception | None:
         forward_task: Final = asyncio.create_task(self.backend_to_client())
+        client_task: Final = asyncio.create_task(self.client_to_backend())
         try:
-            await self.client_to_backend()
-        except Exception:
-            pass
+            await asyncio.wait({forward_task, client_task}, return_when=asyncio.FIRST_COMPLETED)
+            await self._stop_forward_task(forward_task)
+            await self._stop_forward_task(client_task)
         finally:
-            if not forward_task.done():
-                forward_task.cancel()
-                try:
-                    await forward_task
-                except asyncio.CancelledError:
-                    pass
             try:
                 await self.backend_ws.close()
             except Exception:

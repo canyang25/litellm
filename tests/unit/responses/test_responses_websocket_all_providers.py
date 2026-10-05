@@ -3253,3 +3253,118 @@ class TestNativeWebSocketEncryptedContentAffinity:
         )
 
         assert await handler.bidirectional_forward() is None
+
+    @pytest.mark.asyncio
+    async def test_bidirectional_forward_fails_when_upstream_closes_mid_response(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        import websockets.exceptions
+
+        import litellm
+
+        events = [
+            json.dumps(
+                {"type": "response.created", "response": {"id": "resp_1", "status": "in_progress", "output": []}}
+            ),
+            json.dumps({"type": "response.output_text.delta", "response_id": "resp_1", "delta": "partial"}),
+        ]
+
+        async def recv(decode=False):
+            if events:
+                return events.pop(0)
+            raise websockets.exceptions.ConnectionClosed(None, None)
+
+        async def receive_text():
+            await asyncio.Event().wait()
+
+        websocket = MagicMock()
+        websocket.send_text = AsyncMock()
+        websocket.receive_text = receive_text
+        websocket.close = AsyncMock()
+        backend_ws = MagicMock()
+        backend_ws.recv = recv
+        backend_ws.send = AsyncMock()
+        backend_ws.close = AsyncMock()
+        logging_obj = MagicMock()
+        logging_obj.dispatch_success_handlers = AsyncMock()
+        logging_obj.dispatch_failure_handlers = AsyncMock()
+        logging_obj._response_cost_calculator = MagicMock(return_value=0.0)
+        handler = _make_streaming(
+            websocket=websocket,
+            backend_ws=backend_ws,
+            logging_obj=logging_obj,
+            request_data={},
+            authorized_model="gpt-5.6",
+            custom_llm_provider="openai",
+        )
+
+        failure = await asyncio.wait_for(handler.bidirectional_forward(), timeout=2)
+        await asyncio.sleep(0)
+
+        assert isinstance(failure, litellm.APIConnectionError)
+        logging_obj.dispatch_success_handlers.assert_not_awaited()
+        logging_obj.dispatch_failure_handlers.assert_awaited_once()
+        sent = [json.loads(call.args[0]) for call in websocket.send_text.await_args_list]
+        error_frames = [item for item in sent if item.get("type") == "error"]
+        assert len(error_frames) == 1
+        assert error_frames[0]["error"]["code"] == "upstream_closed"
+        websocket.close.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_bidirectional_forward_keeps_success_when_upstream_closes_after_completed(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        import websockets.exceptions
+
+        events = [
+            json.dumps(
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_1",
+                        "status": "completed",
+                        "output": [],
+                        "usage": {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6},
+                    },
+                }
+            ),
+        ]
+
+        async def recv(decode=False):
+            if events:
+                return events.pop(0)
+            raise websockets.exceptions.ConnectionClosed(None, None)
+
+        async def receive_text():
+            await asyncio.Event().wait()
+
+        websocket = MagicMock()
+        websocket.send_text = AsyncMock()
+        websocket.receive_text = receive_text
+        websocket.close = AsyncMock()
+        backend_ws = MagicMock()
+        backend_ws.recv = recv
+        backend_ws.send = AsyncMock()
+        backend_ws.close = AsyncMock()
+        logging_obj = MagicMock()
+        logging_obj.dispatch_success_handlers = AsyncMock()
+        logging_obj.dispatch_failure_handlers = AsyncMock()
+        handler = _make_streaming(
+            websocket=websocket,
+            backend_ws=backend_ws,
+            logging_obj=logging_obj,
+            request_data={},
+            authorized_model="gpt-5.6",
+            custom_llm_provider="openai",
+        )
+
+        assert await asyncio.wait_for(handler.bidirectional_forward(), timeout=2) is None
+        await asyncio.sleep(0)
+
+        logging_obj.dispatch_success_handlers.assert_awaited_once()
+        logging_obj.dispatch_failure_handlers.assert_not_awaited()
+        sent = [json.loads(call.args[0]) for call in websocket.send_text.await_args_list]
+        assert all(item.get("type") != "error" for item in sent)
+        websocket.close.assert_awaited()
