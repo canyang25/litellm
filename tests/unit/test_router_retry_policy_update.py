@@ -48,6 +48,27 @@ def isolate_litellm_callbacks():
 # ---------------------------------------------------------------------------
 
 
+def test_update_router_config_keeps_max_fallbacks():
+    cfg = UpdateRouterConfig(max_fallbacks=10)
+    assert cfg.model_dump(exclude_unset=True)["max_fallbacks"] == 10
+
+
+def test_update_settings_applies_max_fallbacks():
+    router = _build_router()
+    router.max_fallbacks = 2
+
+    router.update_settings(max_fallbacks=10, num_retries=3)
+    assert router.max_fallbacks == 10
+    assert router.num_retries == 3
+
+    router.update_settings(num_retries=4)
+    assert router.max_fallbacks == 10
+    assert router.num_retries == 4
+
+    router.update_settings(max_fallbacks=0)
+    assert router.max_fallbacks == 0
+
+
 def test_update_router_config_exposes_retry_policy_field():
     """retry_policy must be a declared field on UpdateRouterConfig.
 

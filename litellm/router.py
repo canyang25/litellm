@@ -12320,6 +12320,7 @@ class Router:
             "retry_after",
             "allowed_fails",
             "cooldown_time",
+            "max_fallbacks",
         ]
 
         _existing_router_settings: Final = self.get_settings()

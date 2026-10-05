@@ -164,6 +164,7 @@ class UpdateRouterConfig(BaseModel):
     num_retries: int | None = None
     timeout: float | None = None
     max_retries: int | None = None
+    max_fallbacks: int | None = None
     retry_after: float | None = None
     fallbacks: list[dict] | None = None
     context_window_fallbacks: list[dict] | None = None

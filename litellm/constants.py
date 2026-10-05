@@ -20,6 +20,7 @@ RUNTIME_UPDATABLE_ROUTER_SETTINGS: Final[frozenset[str]] = frozenset(
         "num_retries",
         "timeout",
         "max_retries",
+        "max_fallbacks",
         "retry_after",
         "fallbacks",
         "context_window_fallbacks",
