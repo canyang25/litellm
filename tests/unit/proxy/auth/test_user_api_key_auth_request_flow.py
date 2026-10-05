@@ -10193,3 +10193,85 @@ async def test_auto_register_mapping_insert_emits_a_postgres_insert_event_for_th
         "auto_register_jwt_mapping",
         {"table_name": "LiteLLM_JWTKeyMapping"},
     )
+
+
+@pytest.mark.asyncio
+async def test_user_api_key_auth_skips_the_auth_span_for_an_excluded_route(monkeypatch):
+    """A route excluded from the FastAPI server span must not open its own auth root span."""
+    from fastapi import Request
+
+    from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+
+    opened: list[str] = []
+
+    @contextmanager
+    def record_phase_span(name: str):
+        opened.append(name)
+        yield None
+
+    monkeypatch.setattr("litellm.proxy.auth.user_api_key_auth.phase_span", record_phase_span)
+    monkeypatch.setenv("OTEL_PYTHON_FASTAPI_EXCLUDED_URLS", "/model/info,/health")
+
+    master_key = "sk-master-key"
+    proxy = litellm.proxy.proxy_server
+    saved = {
+        attr: getattr(proxy, attr, None)
+        for attr in (
+            "prisma_client",
+            "user_api_key_cache",
+            "proxy_logging_obj",
+            "master_key",
+            "general_settings",
+            "llm_model_list",
+            "llm_router",
+            "user_custom_auth",
+            "jwt_handler",
+            "litellm_proxy_admin_name",
+        )
+    }
+    cache = AsyncMock()
+    cache.async_get_cache = AsyncMock(return_value=None)
+    logging_obj = MagicMock()
+    logging_obj.post_call_failure_hook = AsyncMock(return_value=None)
+    try:
+        proxy.prisma_client = None
+        proxy.user_api_key_cache = cache
+        proxy.proxy_logging_obj = logging_obj
+        proxy.master_key = master_key
+        proxy.general_settings = {}
+        proxy.llm_model_list = []
+        proxy.llm_router = None
+        proxy.user_custom_auth = None
+        proxy.jwt_handler = None
+        proxy.litellm_proxy_admin_name = "admin"
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def authenticate(path: str):
+            request = Request(
+                {
+                    "type": "http",
+                    "http_version": "1.1",
+                    "method": "GET",
+                    "scheme": "http",
+                    "path": path,
+                    "raw_path": path.encode(),
+                    "query_string": b"",
+                    "headers": [],
+                    "client": ("127.0.0.1", 123),
+                    "server": ("127.0.0.1", 4000),
+                },
+                receive,
+            )
+            return await user_api_key_auth(request=request, api_key=f"Bearer {master_key}")
+
+        excluded = await authenticate("/model/info")
+        included = await authenticate("/v1/models")
+    finally:
+        for attr, value in saved.items():
+            setattr(proxy, attr, value)
+
+    assert excluded.api_key is not None
+    assert included.api_key is not None
+    assert opened == ["auth /v1/models"]

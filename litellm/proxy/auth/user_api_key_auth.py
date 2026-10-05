@@ -12,6 +12,7 @@ import fnmatch
 import re
 import secrets
 from collections.abc import Mapping
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Final, NamedTuple, Protocol, Union, cast
 
@@ -3480,6 +3481,14 @@ def _seed_request_destinations(user_api_key_dict: UserAPIKeyAuth, request: Reque
         verbose_proxy_logger.debug("OTel V2: tenant destination resolution failed: %s", exc)
 
 
+def _fastapi_otel_excludes_route(route: str) -> bool:
+    try:
+        from opentelemetry.util.http import get_excluded_urls
+    except Exception:
+        return False
+    return get_excluded_urls("FASTAPI").url_disabled(route)
+
+
 @tracer.wrap()
 async def user_api_key_auth(
     request: Request,
@@ -3508,9 +3517,11 @@ async def user_api_key_auth(
     # Run the whole auth phase inside a live ``auth`` span so the DB lookups it
     # triggers (key/user/team object reads) nest under it instead of flattening
     # onto the server span, and name every cache read in it an auth-object read.
-    # No-op when OTel V2 isn't active.
+    # No-op when OTel V2 isn't active. A route the FastAPI server span already
+    # excludes has no parent, so the auth span would be its own root trace.
+    auth_phase: Final = nullcontext() if _fastapi_otel_excludes_route(route) else phase_span(f"auth {route}")
     with (
-        phase_span(f"auth {route}"),
+        auth_phase,
         service_target(AUTH_OBJECTS_TARGET),
         spend_counter_batch_scope(_spend_counter_redis_cache()),
     ):
