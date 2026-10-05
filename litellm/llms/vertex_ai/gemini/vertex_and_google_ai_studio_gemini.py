@@ -1346,6 +1346,14 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
             return f"'properties' field in tools[0]['function']['parameters'] cannot be empty if 'type' == 'object'. Received error from provider - {exception_string}"
         return exception_string
 
+    @staticmethod
+    def _audio_transcription_text(part: HttpxPartType) -> str:
+        transcription = part.get("audioTranscription")
+        if not isinstance(transcription, dict):
+            return ""
+        transcript = transcription.get("text")
+        return transcript if isinstance(transcript, str) else ""
+
     def get_assistant_content_message(self, parts: list[HttpxPartType]) -> tuple[str | None, str | None]:
         content_str: str | None = None
         reasoning_content_str: str | None = None
@@ -1364,7 +1372,10 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
                     except (ValueError, IndexError):
                         # If parsing fails, treat as regular text
                         pass
-                _content_str += text_content
+                if text_content:
+                    _content_str += text_content
+                else:
+                    _content_str += self._audio_transcription_text(part)
             elif "inlineData" in part:
                 inline_data = part.get("inlineData", {})
                 mime_type = inline_data.get("mimeType", "")
@@ -1375,11 +1386,7 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
                     continue
                 _content_str += f"data:{mime_type};base64,{data}"
             else:
-                transcription = part.get("audioTranscription")
-                if isinstance(transcription, dict):
-                    transcript = transcription.get("text")
-                    if isinstance(transcript, str) and transcript:
-                        _content_str += transcript
+                _content_str += self._audio_transcription_text(part)
 
             if len(_content_str) > 0:
                 if part.get("thought") is True:
