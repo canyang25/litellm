@@ -394,19 +394,19 @@ class Cache:
         combined_kwargs: Final = ModelParamHelper._get_all_llm_api_params()
         is_semantic_cache: Final = self._is_semantic_cache()
         scope_excluded_params: Final = self._SEMANTIC_CACHE_SCOPE_EXCLUDED_PARAMS if is_semantic_cache else frozenset()
-        for param in kwargs:
+        for param in sorted(kwargs):
             if param in scope_excluded_params:
                 continue
             if param in combined_kwargs:
                 param_value: str | None = self._get_param_value(param, kwargs)
                 if param_value is not None:
-                    cache_key += f"{param}: {param_value}"
+                    cache_key += f"{param}: {self._canonical_cache_value(param_value)}"
             elif not is_litellm_owned_kwarg(param):
                 if litellm.enable_caching_on_provider_specific_optional_params is True:  # feature flagged for now
                     if kwargs[param] is None:
                         continue  # ignore None params
                     param_value = kwargs[param]
-                    cache_key += f"{param}: {param_value}"
+                    cache_key += f"{param}: {self._canonical_cache_value(param_value)}"
 
         if is_semantic_cache:
             cache_key += self._get_semantic_cache_tenant_scope(kwargs)
@@ -423,6 +423,26 @@ class Cache:
         kwargs_for_preset: Final = {k: v for k, v in kwargs.items() if k != "preset_cache_key"}
         self._set_preset_cache_key_in_kwargs(preset_cache_key=hashed_cache_key, **kwargs_for_preset)
         return hashed_cache_key
+
+    @staticmethod
+    def _canonical_cache_value(value: object) -> str:
+        return json.dumps(
+            Cache._json_cache_value(value),
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+
+    @staticmethod
+    def _json_cache_value(value: object) -> object:
+        if isinstance(value, Mapping):
+            return {
+                str(key): Cache._json_cache_value(item)
+                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            }
+        if isinstance(value, (list, tuple)):
+            return [Cache._json_cache_value(item) for item in value]
+        return value
 
     def _get_param_value(
         self,

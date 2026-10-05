@@ -40,6 +40,44 @@ def test_get_kwargs_for_cache_key():
     print(relevant_kwargs)
 
 
+def test_get_cache_key_ignores_mapping_key_order():
+    cache = Cache()
+    ordered = cache.get_cache_key(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": "Hello"}],
+        temperature=0.7,
+    )
+    reordered = cache.get_cache_key(
+        temperature=0.7,
+        messages=[{"content": "Hello", "role": "user"}],
+        model="gpt-3.5-turbo",
+    )
+    assert ordered == reordered
+
+    different_temperature = cache.get_cache_key(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": "Hello"}],
+        temperature=0.2,
+    )
+    assert ordered != different_temperature
+
+    two_turns = cache.get_cache_key(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "user", "content": "Hello"},
+            {"role": "user", "content": "again"},
+        ],
+    )
+    swapped_turns = cache.get_cache_key(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "user", "content": "again"},
+            {"role": "user", "content": "Hello"},
+        ],
+    )
+    assert two_turns != swapped_turns
+
+
 def test_get_cache_key_chat_completion():
     cache = Cache()
     kwargs = {
@@ -170,9 +208,9 @@ def test_get_cache_key_responses_api():
     ]:
         kx = {**base_kwargs, param: value_x}
         ky = {**base_kwargs, param: value_y}
-        assert cache.get_cache_key(**kx) != cache.get_cache_key(
-            **ky
-        ), f"Responses-API param `{param}` is not part of the cache key"
+        assert cache.get_cache_key(**kx) != cache.get_cache_key(**ky), (
+            f"Responses-API param `{param}` is not part of the cache key"
+        )
 
 
 def test_get_hashed_cache_key():
@@ -224,10 +262,7 @@ def test_get_model_param_value():
             "caching_groups": [("openai-gpt-3.5-turbo", "azure-gpt-3.5-turbo")],
         },
     }
-    assert (
-        cache._get_model_param_value(kwargs)
-        == "('openai-gpt-3.5-turbo', 'azure-gpt-3.5-turbo')"
-    )
+    assert cache._get_model_param_value(kwargs) == "('openai-gpt-3.5-turbo', 'azure-gpt-3.5-turbo')"
 
     kwargs = {
         "model": "gpt-3.5-turbo",
@@ -236,10 +271,7 @@ def test_get_model_param_value():
             "caching_groups": [("openai-gpt-3.5-turbo", "azure-gpt-3.5-turbo")],
         },
     }
-    assert (
-        cache._get_model_param_value(kwargs)
-        == "('openai-gpt-3.5-turbo', 'azure-gpt-3.5-turbo')"
-    )
+    assert cache._get_model_param_value(kwargs) == "('openai-gpt-3.5-turbo', 'azure-gpt-3.5-turbo')"
 
     kwargs = {
         "model": "gpt-3.5-turbo",
