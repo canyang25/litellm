@@ -1354,6 +1354,18 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         transcript = transcription.get("text")
         return transcript if isinstance(transcript, str) else ""
 
+    @staticmethod
+    def _text_is_audio_data_uri(text_content: str) -> bool:
+        if not text_content.startswith("data:audio") or ";base64," not in text_content:
+            return False
+        if not is_base64_encoded(text_content):
+            return False
+        try:
+            media_type, _ = text_content.split("data:")[1].split(";base64,")
+        except (ValueError, IndexError):
+            return False
+        return media_type.startswith("audio/")
+
     def get_assistant_content_message(self, parts: list[HttpxPartType]) -> tuple[str | None, str | None]:
         content_str: str | None = None
         reasoning_content_str: str | None = None
@@ -1362,17 +1374,9 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
             _content_str = ""
             if "text" in part:
                 text_content = part["text"]
-                # Check if text content is audio data URI - if so, exclude from text content
-                if text_content.startswith("data:audio") and ";base64," in text_content:
-                    try:
-                        if is_base64_encoded(text_content):
-                            media_type, _ = text_content.split("data:")[1].split(";base64,")
-                            if media_type.startswith("audio/"):
-                                continue
-                    except (ValueError, IndexError):
-                        # If parsing fails, treat as regular text
-                        pass
-                if text_content:
+                if self._text_is_audio_data_uri(text_content):
+                    _content_str += self._audio_transcription_text(part)
+                elif text_content:
                     _content_str += text_content
                 else:
                     _content_str += self._audio_transcription_text(part)
@@ -1380,11 +1384,13 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
                 inline_data = part.get("inlineData", {})
                 mime_type = inline_data.get("mimeType", "")
                 data = inline_data.get("data", "")
-                # Check if inline data is audio or image - if so, exclude from text content
-                # Images and audio are now handled separately in their respective response fields
                 if mime_type.startswith("audio/") or mime_type.startswith("image/"):
-                    continue
-                _content_str += f"data:{mime_type};base64,{data}"
+                    transcript = self._audio_transcription_text(part)
+                    if not transcript:
+                        continue
+                    _content_str += transcript
+                else:
+                    _content_str += f"data:{mime_type};base64,{data}"
             else:
                 _content_str += self._audio_transcription_text(part)
 
@@ -1535,12 +1541,11 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
 
                             if media_type.startswith("audio/"):
                                 expires_at = int(time.time()) + (24 * 60 * 60)
-                                transcript = ""  # Gemini doesn't provide transcript
 
                                 return ChatCompletionAudioResponse(
                                     data=audio_data,
                                     expires_at=expires_at,
-                                    transcript=transcript,
+                                    transcript=self._audio_transcription_text(part),
                                 )
                     except (ValueError, IndexError):
                         pass
@@ -1552,9 +1557,12 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
 
                 if mime_type.startswith("audio/"):
                     expires_at = int(time.time()) + (24 * 60 * 60)
-                    transcript = ""  # Gemini doesn't provide transcript
 
-                    return ChatCompletionAudioResponse(data=data, expires_at=expires_at, transcript=transcript)
+                    return ChatCompletionAudioResponse(
+                        data=data,
+                        expires_at=expires_at,
+                        transcript=self._audio_transcription_text(part),
+                    )
 
         return None
 

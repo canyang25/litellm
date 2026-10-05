@@ -19,7 +19,7 @@ from litellm.llms.vertex_ai.gemini.vertex_and_google_ai_studio_gemini import (
     VertexGeminiConfig,
 )
 from litellm.types.llms.vertex_ai import GeminiFinishReason, UsageMetadata
-from litellm.types.utils import ChoiceLogprobs, Usage
+from litellm.types.utils import ChoiceLogprobs, Message, Usage
 from litellm.utils import CustomStreamWrapper
 
 
@@ -908,6 +908,94 @@ def test_gemini_transcribe_empty_text_uses_audio_transcription():
 
     assert _completion_content(payload) == _AUDIO_TRANSCRIPT
     assert _stream_content(payload) == _AUDIO_TRANSCRIPT
+
+
+_INLINE_AUDIO_DATA: Final = "AQID"
+
+
+def _inline_audio_transcription_response() -> dict:
+    payload = _audio_transcription_response()
+    payload["candidates"][0]["content"]["parts"] = [
+        {
+            "inlineData": {"mimeType": "audio/wav", "data": _INLINE_AUDIO_DATA},
+            "audioTranscription": {"text": _AUDIO_TRANSCRIPT},
+        }
+    ]
+    return payload
+
+
+def _completion_message(payload: dict) -> Message:
+    raw_response = MagicMock()
+    raw_response.json.return_value = payload
+    raw_response.headers = {}
+    result = VertexGeminiConfig().transform_response(
+        model="gemini/gemini-3.5-transcribe",
+        raw_response=raw_response,
+        model_response=ModelResponse(),
+        logging_obj=MagicMock(),
+        request_data={},
+        messages=[],
+        optional_params={},
+        litellm_params={},
+        encoding=None,
+    )
+    return result.choices[0].message
+
+
+def test_gemini_inline_audio_transcription_completion_keeps_transcript():
+    message = _completion_message(_inline_audio_transcription_response())
+
+    assert message.content == _AUDIO_TRANSCRIPT
+    assert message.audio.data == _INLINE_AUDIO_DATA
+    assert message.audio.transcript == _AUDIO_TRANSCRIPT
+
+
+def test_gemini_inline_audio_transcription_stream_keeps_transcript():
+    assert _stream_content(_inline_audio_transcription_response()) == _AUDIO_TRANSCRIPT
+
+
+def test_gemini_audio_data_uri_keeps_same_part_transcript():
+    data_uri = "data:audio/mpeg;base64,SUQzBAA="
+    payload = _audio_transcription_response()
+    payload["candidates"][0]["content"]["parts"] = [
+        {"text": data_uri, "audioTranscription": {"text": _AUDIO_TRANSCRIPT}}
+    ]
+
+    message = _completion_message(payload)
+    assert message.content == _AUDIO_TRANSCRIPT
+    assert data_uri not in message.content
+    assert message.audio.data == "SUQzBAA="
+    assert message.audio.transcript == _AUDIO_TRANSCRIPT
+    assert _stream_content(payload) == _AUDIO_TRANSCRIPT
+
+
+def test_gemini_audio_data_uri_without_transcript_stays_out_of_content():
+    payload = _audio_transcription_response()
+    payload["candidates"][0]["content"]["parts"] = [{"text": "data:audio/mpeg;base64,SUQzBAA="}]
+
+    assert _completion_content(payload) is None
+    assert _stream_content(payload) is None
+
+
+def test_gemini_inline_audio_without_transcript_stays_out_of_content():
+    payload = _audio_transcription_response()
+    payload["candidates"][0]["content"]["parts"] = [
+        {"inlineData": {"mimeType": "audio/wav", "data": _INLINE_AUDIO_DATA}}
+    ]
+
+    message = _completion_message(payload)
+    assert message.content is None
+    assert message.audio.data == _INLINE_AUDIO_DATA
+    assert message.audio.transcript == ""
+
+
+def test_gemini_inline_image_stays_out_of_text_content():
+    payload = _audio_transcription_response()
+    payload["candidates"][0]["content"]["parts"] = [
+        {"inlineData": {"mimeType": "image/png", "data": _INLINE_AUDIO_DATA}}
+    ]
+
+    assert _completion_content(payload) is None
 
 
 def test_streaming_chunk_with_tool_calls_and_thought_includes_reasoning_content():
